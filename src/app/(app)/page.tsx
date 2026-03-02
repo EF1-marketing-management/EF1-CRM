@@ -1,6 +1,9 @@
 import { createClient } from '@/lib/supabase/server';
 import { Users, Building2, Handshake, TrendingUp } from 'lucide-react';
 import Link from 'next/link';
+import { DEAL_PIPELINE_STATUSES } from '@/lib/types';
+
+const ACTIVE_STATUSES = DEAL_PIPELINE_STATUSES.filter((s) => s !== 'Deal');
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -9,12 +12,17 @@ export default async function DashboardPage() {
     { count: contactCount },
     { count: clientCount },
     { count: dealCount },
+    { count: activeDealCount },
     { data: recentDeals },
     { data: recentContacts },
   ] = await Promise.all([
     supabase.from('contacts').select('*', { count: 'exact', head: true }),
     supabase.from('clients').select('*', { count: 'exact', head: true }),
     supabase.from('deals').select('*', { count: 'exact', head: true }),
+    supabase
+      .from('deals')
+      .select('*', { count: 'exact', head: true })
+      .in('status', ACTIVE_STATUSES as unknown as string[]),
     supabase
       .from('deals_with_relations')
       .select('*')
@@ -51,10 +59,7 @@ export default async function DashboardPage() {
     },
     {
       name: 'Aktivní deals',
-      value:
-        recentDeals?.filter(
-          (d) => !['Deal', 'Nevyšlo', 'Malý budget', 'Bez odpovědi'].includes(d.status)
-        ).length ?? 0,
+      value: activeDealCount ?? 0,
       icon: TrendingUp,
       href: '/deals',
       color: 'bg-amber-50 text-amber-600',
