@@ -9,6 +9,7 @@ import {
   Handshake,
   LogOut,
   Search,
+  Settings,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
@@ -91,8 +92,19 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Logout */}
-      <div className="border-t border-border p-3">
+      {/* Settings & Logout */}
+      <div className="border-t border-border p-3 space-y-1">
+        <Link
+          href="/settings"
+          className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+            pathname === '/settings'
+              ? 'bg-accent/10 text-accent'
+              : 'text-muted hover:bg-background hover:text-foreground'
+          }`}
+        >
+          <Settings className="h-5 w-5" />
+          Nastavení
+        </Link>
         <button
           onClick={handleLogout}
           className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-muted transition-colors hover:bg-background hover:text-foreground"
