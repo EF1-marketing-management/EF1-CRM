@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import QuickAddForm from './QuickAddForm';
 
 export const metadata = {
@@ -17,7 +18,9 @@ export default function QuickAddPage() {
         </p>
       </div>
 
-      <QuickAddForm />
+      <Suspense fallback={<div className="text-center text-muted text-sm">Načítám...</div>}>
+        <QuickAddForm />
+      </Suspense>
     </div>
   );
 }

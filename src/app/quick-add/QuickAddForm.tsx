@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { INQUIRY_TYPES, ASSIGNED_PEOPLE } from '@/lib/types';
 import { CheckCircle2, Plus, Mail, Handshake, ArrowLeft } from 'lucide-react';
@@ -9,6 +10,7 @@ import Link from 'next/link';
 type Mode = 'contact' | 'deal' | 'both' | 'email';
 
 export default function QuickAddForm() {
+  const searchParams = useSearchParams();
   const [mode, setMode] = useState<Mode | null>(null);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
@@ -36,6 +38,34 @@ export default function QuickAddForm() {
   const [emailFrom, setEmailFrom] = useState('');
   const [emailSubject, setEmailSubject] = useState('');
   const [emailBody, setEmailBody] = useState('');
+
+  // Pre-fill from URL params: ?mode=email&from=...&subject=...&body=...
+  useEffect(() => {
+    const paramMode = searchParams.get('mode') as Mode | null;
+    const paramFrom = searchParams.get('from') || '';
+    const paramSubject = searchParams.get('subject') || '';
+    const paramBody = searchParams.get('body') || '';
+
+    if (paramMode) setMode(paramMode);
+
+    if (paramFrom || paramSubject) {
+      // Auto-switch to email mode if email params present
+      if (!paramMode) setMode('email');
+      if (paramFrom) setEmailFrom(paramFrom);
+      if (paramSubject) setEmailSubject(paramSubject);
+      if (paramBody) setEmailBody(paramBody);
+    }
+
+    // Pre-fill contact fields
+    const paramFirstName = searchParams.get('first_name') || '';
+    const paramLastName = searchParams.get('last_name') || '';
+    const paramEmail = searchParams.get('email') || '';
+    const paramCompany = searchParams.get('company') || '';
+    if (paramFirstName) setFirstName(paramFirstName);
+    if (paramLastName) setLastName(paramLastName);
+    if (paramEmail) setEmail(paramEmail);
+    if (paramCompany) setCompanyName(paramCompany);
+  }, [searchParams]);
 
   useEffect(() => {
     const fetchClients = async () => {

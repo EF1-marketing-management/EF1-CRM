@@ -1,0 +1,29 @@
+{
+  "timeZone": "Europe/Prague",
+  "dependencies": {},
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/gmail.addons.execute",
+    "https://www.googleapis.com/auth/gmail.addons.current.message.readonly",
+    "https://www.googleapis.com/auth/script.external_request"
+  ],
+  "addOns": {
+    "common": {
+      "name": "EF1 CRM",
+      "logoUrl": "https://ef-1-crm.vercel.app/favicon.ico",
+      "useLocaleFromApp": true,
+      "homepageTrigger": {
+        "runFunction": "onHomepage"
+      }
+    },
+    "gmail": {
+      "contextualTriggers": [
+        {
+          "unconditional": {},
+          "onTriggerFunction": "onGmailMessage"
+        }
+      ]
+    }
+  }
+}
