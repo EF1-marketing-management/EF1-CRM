@@ -1,25 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiKey } from '@/lib/api-auth';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { parseEmailFull, detectInquiryType } from '@/lib/email-signature-parser';
+import { upsertContact, upsertClient } from '@/lib/contact-upsert';
 
 /**
  * POST /api/parse-email
- * Parse email data and create/find contact + create deal
+ * Parse email data → find/create client + find/create contact + create deal
+ * Nikdy neduplikuje kontakty — aktualizuje existující.
+ * Extrahuje maximum info z podpisu emailu.
  *
- * Body options:
- * 
- * Option A — Structured (preferred):
+ * Body:
  * {
  *   "from_name": "Jan Novák",
  *   "from_email": "jan.novak@firma.cz",
- *   "subject": "Poptávka školení pro tým",
- *   "body": "Dobrý den, chtěli bychom objednat školení...",
- *   "company_name": "Firma s.r.o."    // optional, extracted from email domain if missing
+ *   "subject": "Poptávka školení",
+ *   "body": "Dobrý den...\n--\nJan Novák | HR Manager\nFirma s.r.o.\n+420 123 456 789",
+ *   "company_name": "Firma s.r.o."  // optional
  * }
  *
- * Option B — Raw (simpler, we parse it):
+ * Nebo raw_text:
  * {
- *   "raw_text": "From: Jan Novák <jan.novak@firma.cz>\nSubject: Poptávka školení\n\nDobrý den..."
+ *   "raw_text": "From: Jan Novák <jan@firma.cz>\nSubject: ...\n\nDobrý den..."
  * }
  */
 export async function POST(req: NextRequest) {
@@ -31,7 +33,7 @@ export async function POST(req: NextRequest) {
   let fromEmail: string;
   let subject: string;
   let emailBody: string;
-  let companyName: string;
+  let explicitCompany: string;
 
   // ──── Parse input ────
   if (body.raw_text) {
@@ -40,25 +42,26 @@ export async function POST(req: NextRequest) {
     fromEmail = parsed.fromEmail;
     subject = parsed.subject;
     emailBody = parsed.body;
-    companyName = body.company_name || extractCompanyFromEmail(fromEmail);
+    explicitCompany = body.company_name || '';
   } else if (body.from_email) {
     fromName = body.from_name || '';
     fromEmail = body.from_email;
     subject = body.subject || 'Nový deal z emailu';
     emailBody = body.body || '';
-    companyName = body.company_name || extractCompanyFromEmail(fromEmail);
+    explicitCompany = body.company_name || '';
   } else {
     return NextResponse.json(
-      {
-        error:
-          'Zadejte buď "from_email" + "subject", nebo "raw_text" s celým emailem',
-      },
+      { error: 'Zadejte buď "from_email" + "subject", nebo "raw_text"' },
       { status: 400 }
     );
   }
 
-  // Split name
-  const nameParts = splitName(fromName || fromEmail.split('@')[0]);
+  // ──── Smart parsing ────
+  const parsed = parseEmailFull(fromName, fromEmail, emailBody);
+  const companyName =
+    explicitCompany ||
+    parsed.signature.company_name ||
+    parsed.companyFromDomain;
 
   const supabase = createAdminClient();
   const results: Record<string, unknown> = {};
@@ -66,68 +69,43 @@ export async function POST(req: NextRequest) {
   // ──── 1. Find or create Client ────
   let clientId: string | null = null;
   if (companyName) {
-    const { data: existingClient } = await supabase
-      .from('clients')
-      .select('id, name')
-      .ilike('name', companyName.trim())
-      .limit(1);
-
-    if (existingClient && existingClient.length > 0) {
-      clientId = existingClient[0].id;
-      results.client = { ...existingClient[0], created: false };
-    } else {
-      const { data: newClient, error: clientError } = await supabase
-        .from('clients')
-        .insert({ name: companyName.trim() })
-        .select()
-        .single();
-
-      if (clientError) {
-        return NextResponse.json(
-          { error: `Chyba při vytváření klienta: ${clientError.message}` },
-          { status: 500 }
-        );
-      }
-      clientId = newClient.id;
-      results.client = { ...newClient, created: true };
+    try {
+      const clientResult = await upsertClient(supabase, companyName);
+      clientId = clientResult.client.id as string;
+      results.client = { ...clientResult.client, created: clientResult.created };
+    } catch (err) {
+      return NextResponse.json(
+        { error: (err as Error).message },
+        { status: 500 }
+      );
     }
   }
 
-  // ──── 2. Find or create Contact ────
+  // ──── 2. Find or create Contact (s deduplikací) ────
   let contactId: string | null = null;
-  if (fromEmail) {
-    const { data: existingContact } = await supabase
-      .from('contacts')
-      .select('id, first_name, last_name, primary_email')
-      .eq('primary_email', fromEmail.toLowerCase())
-      .limit(1);
-
-    if (existingContact && existingContact.length > 0) {
-      contactId = existingContact[0].id;
-      results.contact = { ...existingContact[0], created: false };
-    } else {
-      const { data: newContact, error: contactError } = await supabase
-        .from('contacts')
-        .insert({
-          first_name: nameParts.firstName,
-          last_name: nameParts.lastName,
-          primary_email: fromEmail.toLowerCase(),
-          client_id: clientId,
-          company_name: companyName || null,
-          email_status: 'Aktivní',
-        })
-        .select()
-        .single();
-
-      if (contactError) {
-        return NextResponse.json(
-          { error: `Chyba při vytváření kontaktu: ${contactError.message}` },
-          { status: 500 }
-        );
-      }
-      contactId = newContact.id;
-      results.contact = { ...newContact, created: true };
-    }
+  try {
+    const contactResult = await upsertContact(supabase, {
+      first_name: parsed.firstName,
+      last_name: parsed.lastName,
+      primary_email: parsed.email,
+      phone: parsed.signature.phone || null,
+      linkedin_url: parsed.signature.linkedin_url || null,
+      client_id: clientId,
+      company_name: companyName || null,
+      position: parsed.signature.position || null,
+      email_status: 'Aktivní',
+    });
+    contactId = contactResult.contact.id as string;
+    results.contact = {
+      ...contactResult.contact,
+      created: contactResult.created,
+      updated: contactResult.updated,
+    };
+  } catch (err) {
+    return NextResponse.json(
+      { error: (err as Error).message },
+      { status: 500 }
+    );
   }
 
   // ──── 3. Create Deal ────
@@ -136,10 +114,13 @@ export async function POST(req: NextRequest) {
 
   const noteLines = [
     `📧 Vytvořeno z emailu`,
-    `Od: ${fromName} <${fromEmail}>`,
+    `Od: ${fromName || parsed.firstName} <${fromEmail}>`,
     `Předmět: ${subject}`,
+    parsed.signature.position ? `Pozice: ${parsed.signature.position}` : '',
+    parsed.signature.phone ? `Telefon: ${parsed.signature.phone}` : '',
+    parsed.signature.linkedin_url ? `LinkedIn: ${parsed.signature.linkedin_url}` : '',
     '',
-    emailBody ? `--- Obsah emailu ---\n${emailBody.substring(0, 1000)}` : '',
+    emailBody ? `--- Obsah emailu ---\n${emailBody.substring(0, 1500)}` : '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -167,9 +148,13 @@ export async function POST(req: NextRequest) {
 
   results.deal = { ...newDeal, created: true };
 
+  // ──── 4. Airtable sync (pokud je nakonfigurovaný) ────
+  const airtableResult = await syncToAirtable(results);
+  if (airtableResult) results.airtable_sync = airtableResult;
+
   return NextResponse.json(
     {
-      message: '✅ Email zpracován — vytvořen kontakt + deal',
+      message: '✅ Email zpracován',
       ...results,
     },
     { status: 201 }
@@ -207,57 +192,7 @@ function parseRawEmail(raw: string) {
   }
 
   const body = lines.slice(bodyStartIndex).join('\n').trim();
-
   return { fromName, fromEmail, subject, body };
-}
-
-function splitName(fullName: string): { firstName: string; lastName: string } {
-  // Handle email-like names: "jan.novak" → "Jan Novak"
-  const cleaned = fullName
-    .replace(/[._-]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const parts = cleaned.split(' ');
-
-  if (parts.length === 0) return { firstName: 'Neznámý', lastName: 'Kontakt' };
-  if (parts.length === 1)
-    return {
-      firstName: capitalize(parts[0]),
-      lastName: '',
-    };
-
-  return {
-    firstName: capitalize(parts[0]),
-    lastName: parts
-      .slice(1)
-      .map(capitalize)
-      .join(' '),
-  };
-}
-
-function capitalize(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
-}
-
-function extractCompanyFromEmail(email: string): string {
-  if (!email) return '';
-  const domain = email.split('@')[1];
-  if (!domain) return '';
-
-  // Skip generic email providers
-  const generic = [
-    'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.cz',
-    'outlook.com', 'hotmail.com', 'live.com',
-    'seznam.cz', 'email.cz', 'centrum.cz', 'post.cz',
-    'icloud.com', 'me.com', 'mac.com',
-    'protonmail.com', 'proton.me',
-  ];
-
-  if (generic.includes(domain.toLowerCase())) return '';
-
-  // Use domain without TLD as company name
-  const parts = domain.split('.');
-  return capitalize(parts[0]);
 }
 
 function buildDealName(company: string, subject: string): string {
@@ -265,29 +200,56 @@ function buildDealName(company: string, subject: string): string {
     .replace(/^(Re|Fwd|Fw|Odp|Přep):\s*/gi, '')
     .trim();
 
-  if (company && cleanSubject) {
-    return `${company} | ${cleanSubject}`;
-  }
+  if (company && cleanSubject) return `${company} | ${cleanSubject}`;
   if (cleanSubject) return cleanSubject;
   if (company) return `${company} | Nová poptávka`;
   return 'Nový deal z emailu';
 }
 
-function detectInquiryType(text: string): string | null {
-  const lower = text.toLowerCase();
+/**
+ * Sync nového kontaktu do Airtable (pokud jsou env vars nastavené)
+ */
+async function syncToAirtable(
+  results: Record<string, unknown>
+): Promise<string | null> {
+  const airtableKey = process.env.AIRTABLE_API_KEY;
+  const airtableBase = process.env.AIRTABLE_BASE_ID;
+  const airtableTable = process.env.AIRTABLE_CONTACTS_TABLE || 'Contacts';
 
-  if (lower.includes('keynote') || lower.includes('přednášk'))
-    return 'Přednáška / keynote';
-  if (lower.includes('školení') || lower.includes('training'))
-    return 'Školení';
-  if (lower.includes('workshop')) return 'Workshop';
-  if (lower.includes('program')) return 'Program';
-  if (
-    lower.includes('interní') ||
-    lower.includes('masterclass') ||
-    lower.includes('konzultac')
-  )
-    return 'Jiné (interní program apod.)';
+  if (!airtableKey || !airtableBase) return null;
 
-  return null;
+  const contact = results.contact as Record<string, unknown>;
+  if (!contact || !contact.created) return 'skipped (existing contact)';
+
+  try {
+    const response = await fetch(
+      `https://api.airtable.com/v0/${airtableBase}/${encodeURIComponent(airtableTable)}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${airtableKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          records: [
+            {
+              fields: {
+                'Jméno': contact.first_name,
+                'Příjmení': contact.last_name,
+                'Email': contact.primary_email,
+                'Telefon': contact.phone || '',
+                'Firma': contact.company_name || '',
+                'Pozice': contact.position || '',
+              },
+            },
+          ],
+        }),
+      }
+    );
+
+    if (response.ok) return 'synced';
+    return `error: ${response.status}`;
+  } catch {
+    return 'error: network';
+  }
 }

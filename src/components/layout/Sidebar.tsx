@@ -10,6 +10,8 @@ import {
   LogOut,
   Search,
   Settings,
+  Upload,
+  PlusCircle,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
@@ -20,6 +22,8 @@ const navigation = [
   { name: 'Kontakty', href: '/contacts', icon: Users },
   { name: 'Klienti', href: '/clients', icon: Building2 },
   { name: 'Deals', href: '/deals', icon: Handshake },
+  { name: 'Import CSV', href: '/import', icon: Upload },
+  { name: 'Rychlé přidání', href: '/quick-add', icon: PlusCircle },
 ];
 
 export default function Sidebar() {

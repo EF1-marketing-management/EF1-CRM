@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiKey } from '@/lib/api-auth';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { upsertContact, upsertClient } from '@/lib/contact-upsert';
+import { extractCompanyFromEmail } from '@/lib/email-signature-parser';
 
 /**
  * GET /api/contacts?search=...&limit=50
@@ -39,8 +41,19 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST /api/contacts
- * Create a new contact
- * Body: { first_name, last_name, primary_email?, company_name?, position?, ... }
+ * Create or update contact (s deduplikací).
+ *
+ * Body: {
+ *   first_name, last_name, primary_email?,
+ *   company_name? / company?, position?,
+ *   phone?, linkedin_url?, departments?, programs?,
+ *   note?
+ * }
+ *
+ * Automaticky:
+ * - Najde nebo vytvoří klienta z company_name
+ * - Kontakt s existujícím emailem = aktualizace (ne duplikát)
+ * - Přidá programy / oddělení bez mazání stávajících
  */
 export async function POST(req: NextRequest) {
   const authError = validateApiKey(req);
@@ -57,52 +70,69 @@ export async function POST(req: NextRequest) {
 
   const supabase = createAdminClient();
 
-  // Check if contact with same email already exists
-  if (body.primary_email) {
-    const { data: existing } = await supabase
-      .from('contacts')
-      .select('id, first_name, last_name, primary_email')
-      .eq('primary_email', body.primary_email)
-      .limit(1);
+  // ──── Resolve Client ────
+  let clientId: string | null = body.client_id || null;
+  const companyName = body.company_name || body.company || '';
 
-    if (existing && existing.length > 0) {
-      return NextResponse.json(
-        {
-          message: 'Kontakt s tímto emailem už existuje',
-          existing_contact: existing[0],
-          created: false,
-        },
-        { status: 200 }
-      );
+  if (!clientId && companyName) {
+    try {
+      const { client } = await upsertClient(supabase, companyName);
+      clientId = client.id as string;
+    } catch {
+      // Client creation failed, continue without
     }
   }
 
-  const payload = {
-    first_name: body.first_name,
-    last_name: body.last_name,
-    salutation: body.salutation || null,
-    primary_email: body.primary_email || null,
-    secondary_email: body.secondary_email || null,
-    phone: body.phone || null,
-    linkedin_url: body.linkedin_url || null,
-    client_id: body.client_id || null,
-    company_name: body.company_name || null,
-    position: body.position || null,
-    departments: body.departments || [],
-    email_status: body.email_status || 'Aktivní',
-    programs: body.programs || [],
-    note: body.note || null,
-  };
-
-  const { data, error } = await supabase
-    .from('contacts')
-    .insert(payload)
-    .select()
-    .single();
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  // Try to extract company from email if not provided
+  if (!clientId && !companyName && body.primary_email) {
+    const fromDomain = extractCompanyFromEmail(body.primary_email);
+    if (fromDomain) {
+      try {
+        const { client } = await upsertClient(supabase, fromDomain);
+        clientId = client.id as string;
+      } catch {
+        // Ignore
+      }
+    }
   }
 
-  return NextResponse.json({ contact: data, created: true }, { status: 201 });
+  // ──── Upsert Contact ────
+  try {
+    const result = await upsertContact(supabase, {
+      first_name: body.first_name,
+      last_name: body.last_name,
+      primary_email: body.primary_email || null,
+      secondary_email: body.secondary_email || null,
+      phone: body.phone || null,
+      linkedin_url: body.linkedin_url || null,
+      client_id: clientId,
+      company_name: companyName || null,
+      position: body.position || null,
+      departments: body.departments || [],
+      programs: body.programs || [],
+      email_status: body.email_status || 'Aktivní',
+      salutation: body.salutation || null,
+      note: body.note || null,
+    });
+
+    const status = result.created ? 201 : 200;
+    return NextResponse.json(
+      {
+        contact: result.contact,
+        created: result.created,
+        updated: result.updated,
+        message: result.created
+          ? 'Kontakt vytvořen'
+          : result.updated
+            ? 'Existující kontakt aktualizován'
+            : 'Kontakt již existuje (beze změn)',
+      },
+      { status }
+    );
+  } catch (err) {
+    return NextResponse.json(
+      { error: (err as Error).message },
+      { status: 500 }
+    );
+  }
 }
