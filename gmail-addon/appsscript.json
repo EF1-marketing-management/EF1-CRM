@@ -3,6 +3,9 @@
   "dependencies": {},
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8",
+  "urlFetchWhitelist": [
+    "https://ef-1-crm.vercel.app/"
+  ],
   "addOns": {
     "common": {
       "name": "EF1 CRM",
