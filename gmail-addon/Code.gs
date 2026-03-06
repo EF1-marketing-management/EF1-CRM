@@ -17,35 +17,61 @@ function onGmailMessage(e) {
 
   var from = message.getFrom();
   var subject = message.getSubject() || '(bez předmětu)';
-  var parsed = parseFrom(from);
+  var body = message.getPlainBody() || '';
+
+  var senderParsed = parseFrom(from);
+
+  // Detekce přeposlaného emailu – zobrazíme skutečného odesílatele
+  var fwd = extractForwardedSender(subject, body);
+  var displayName  = fwd.found ? (fwd.name || fwd.email) : (senderParsed.name || senderParsed.email);
+  var displayEmail = fwd.found ? fwd.email : senderParsed.email;
+  var displaySubject = fwd.found ? (fwd.subject || subject) : subject;
+
+  var infoSection = CardService.newCardSection().setHeader('Email');
+
+  if (fwd.found) {
+    // Ukážeme skutečného odesílatele a upozorníme na přeposílání
+    infoSection
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel('Skutečný odesílatel')
+          .setText(displayName)
+          .setBottomLabel(displayEmail)
+      )
+      .addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel('Přeposláno přes')
+          .setText(senderParsed.email)
+      );
+  } else {
+    infoSection.addWidget(
+      CardService.newDecoratedText()
+        .setTopLabel('Od')
+        .setText(displayName)
+        .setBottomLabel(displayEmail)
+    );
+  }
+
+  infoSection
+    .addWidget(
+      CardService.newDecoratedText()
+        .setTopLabel('Předmět')
+        .setText(displaySubject)
+    )
+    .addWidget(
+      CardService.newDecoratedText()
+        .setTopLabel('Firma (z domény)')
+        .setText(extractCompany(displayEmail) || '—')
+    );
 
   var card = CardService.newCardBuilder()
     .setHeader(
       CardService.newCardHeader()
         .setTitle('EF1 CRM')
-        .setSubtitle('Přidat do CRM')
+        .setSubtitle(fwd.found ? '⚠️ Přeposlaný email' : 'Přidat do CRM')
         .setImageUrl('https://ef-1-crm.vercel.app/favicon.ico')
     )
-    .addSection(
-      CardService.newCardSection()
-        .setHeader('Email')
-        .addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel('Od')
-            .setText(parsed.name || parsed.email)
-            .setBottomLabel(parsed.email)
-        )
-        .addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel('Předmět')
-            .setText(subject)
-        )
-        .addWidget(
-          CardService.newDecoratedText()
-            .setTopLabel('Firma (z domény)')
-            .setText(extractCompany(parsed.email) || '—')
-        )
-    )
+    .addSection(infoSection)
     .addSection(
       CardService.newCardSection()
         .addWidget(
@@ -56,13 +82,11 @@ function onGmailMessage(e) {
             .setOnClickAction(
               CardService.newAction()
                 .setFunctionName('addToCrm')
-                // Předáváme jen messageId + accessToken, ne celý body
-                // (Google Apps Script limituje parametry na 256 znaků)
                 .setParameters({
                   message_id: messageId,
                   access_token: accessToken,
-                  from_name: parsed.name || '',
-                  from_email: parsed.email || '',
+                  from_name: senderParsed.name || '',
+                  from_email: senderParsed.email || '',
                   subject: subject.substring(0, 200)
                 })
             )
@@ -84,6 +108,47 @@ function onGmailMessage(e) {
     .build();
 
   return [card];
+}
+
+/**
+ * Detekuje přeposlaný email a extrahuje skutečného odesílatele z těla zprávy.
+ * Podporuje Gmail CZ/EN formát i Outlook.
+ */
+function extractForwardedSender(subject, body) {
+  var result = { found: false, name: '', email: '', subject: '' };
+
+  var isFwdSubject = /^(fwd?|přep|fw):\s*/i.test(subject);
+
+  // Hledáme blok přeposlaného emailu
+  var fwdPattern = /[-—]{3,}\s*(?:Forwarded message|Přeposlaná zpráva|Forwarded Mail|Original Message|Původní zpráva)\s*[-—]{3,}/i;
+  var fwdMatch = body.match(fwdPattern);
+
+  if (!fwdMatch && !isFwdSubject) return result;
+
+  var searchBody = fwdMatch ? body.slice(body.indexOf(fwdMatch[0])) : body;
+  var lines = searchBody.split('\n');
+
+  for (var i = 0; i < Math.min(lines.length, 20); i++) {
+    var line = lines[i];
+
+    // Od: / From:
+    var fromMatch = line.match(
+      /^(?:From|Od|Von|De):\s*(?:"?([^"<\n]*?)"?\s*)?<?([^\s>@\n]+@[^\s>@\n]+)>?/i
+    );
+    if (fromMatch) {
+      result.name  = (fromMatch[1] || '').trim();
+      result.email = (fromMatch[2] || '').trim().toLowerCase();
+      result.found = true;
+    }
+
+    // Subject: / Předmět:
+    var subjectMatch = line.match(/^(?:Subject|Předmět|Betreff|Sujet):\s*(.+)/i);
+    if (subjectMatch) {
+      result.subject = subjectMatch[1].trim();
+    }
+  }
+
+  return result;
 }
 
 /**

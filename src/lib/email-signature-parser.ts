@@ -18,26 +18,129 @@ export interface ParsedEmailSender {
   email: string;
   companyFromDomain: string;
   signature: ParsedSignature;
+  isForwarded: boolean;
+}
+
+export interface ForwardedContent {
+  isForwarded: boolean;
+  realFromName: string;
+  realFromEmail: string;
+  realSubject: string;
+  realBody: string;
 }
 
 /**
- * Parsuje celý email a extrahuje maximum informací
+ * Detekuje přeposlaný email a extrahuje skutečného odesílatele z těla zprávy.
+ *
+ * Podporuje formáty:
+ * - Gmail CZ: "---------- Přeposlaná zpráva ----------\nOd: ..."
+ * - Gmail EN: "---------- Forwarded message ---------\nFrom: ..."
+ * - Outlook:  "-----Original Message-----\nFrom: ..."
+ */
+export function extractForwardedContent(
+  fromEmail: string,
+  subject: string,
+  body: string
+): ForwardedContent {
+  const notForwarded: ForwardedContent = {
+    isForwarded: false,
+    realFromName: '',
+    realFromEmail: fromEmail,
+    realSubject: subject,
+    realBody: body,
+  };
+
+  if (!body) return notForwarded;
+
+  // Hledáme blok přeposlaného emailu
+  const fwdMarker = body.match(
+    /[-—]{3,}\s*(?:Forwarded message|Přeposlaná zpráva|Forwarded Mail|Original Message|Původní zpráva)\s*[-—]{3,}/i
+  );
+
+  const isFwdSubject = /^(fwd?|přep|fw):\s*/i.test(subject);
+
+  if (!fwdMarker && !isFwdSubject) return notForwarded;
+
+  // Prohledáme řádky od začátku bloku (nebo od začátku)
+  const searchFrom = fwdMarker ? body.indexOf(fwdMarker[0]) : 0;
+  const lines = body.slice(searchFrom).split('\n');
+
+  let realFromName = '';
+  let realFromEmail = '';
+  let realSubject = subject.replace(/^(fwd?|přep|fw):\s*/i, '').trim();
+  let headerEndLine = lines.length;
+
+  for (let i = 0; i < Math.min(lines.length, 20); i++) {
+    const line = lines[i];
+
+    // Od: / From: / Von: / De:
+    const fromMatch = line.match(
+      /^(?:From|Od|Von|De):\s*(?:"?([^"<\n]*?)"?\s*)?<?([^\s>@\n]+@[^\s>@\n]+)>?/i
+    );
+    if (fromMatch) {
+      realFromName = (fromMatch[1] || '').trim();
+      realFromEmail = (fromMatch[2] || '').trim().toLowerCase();
+    }
+
+    // Subject: / Předmět:
+    const subjectMatch = line.match(
+      /^(?:Subject|Předmět|Betreff|Sujet):\s*(.+)/i
+    );
+    if (subjectMatch) {
+      realSubject = subjectMatch[1].trim();
+    }
+
+    // Prázdný řádek = konec hlaviček přeposlaného emailu
+    if (i > 3 && line.trim() === '') {
+      headerEndLine = i + 1;
+      break;
+    }
+  }
+
+  if (!realFromEmail) return notForwarded;
+
+  const realBody = lines.slice(headerEndLine).join('\n').trim();
+
+  return {
+    isForwarded: true,
+    realFromName,
+    realFromEmail,
+    realSubject,
+    realBody,
+  };
+}
+
+/**
+ * Parsuje celý email a extrahuje maximum informací.
+ * Pokud je předmět dodán, automaticky detekuje přeposlaný email.
  */
 export function parseEmailFull(
   fromName: string,
   fromEmail: string,
-  body: string
+  body: string,
+  subject?: string
 ): ParsedEmailSender {
-  const nameParts = splitName(fromName || fromEmail.split('@')[0]);
-  const companyFromDomain = extractCompanyFromEmail(fromEmail);
-  const signature = parseSignature(body);
+  // Detekce přeposlaného emailu
+  const fwd = subject
+    ? extractForwardedContent(fromEmail, subject, body)
+    : null;
+
+  const effectiveEmail = fwd?.isForwarded ? fwd.realFromEmail : fromEmail;
+  const effectiveName  = fwd?.isForwarded ? (fwd.realFromName || fromName) : fromName;
+  // Pro podpis použijeme reálné tělo přeposlaného emailu; jako zálohu celé tělo
+  const effectiveBody  = fwd?.isForwarded ? (fwd.realBody || body) : body;
+
+  const nameParts = splitName(effectiveName || effectiveEmail.split('@')[0]);
+  const companyFromDomain = extractCompanyFromEmail(effectiveEmail);
+  const signature = parseSignature(effectiveBody);
 
   return {
     firstName: nameParts.firstName,
     lastName: nameParts.lastName,
-    email: fromEmail.toLowerCase(),
+    email: effectiveEmail.toLowerCase(),
     companyFromDomain,
     signature,
+    isForwarded: fwd?.isForwarded ?? false,
   };
 }
 

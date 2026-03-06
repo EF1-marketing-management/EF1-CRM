@@ -56,8 +56,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ──── Smart parsing ────
-  const parsed = parseEmailFull(fromName, fromEmail, emailBody);
+  // ──── Smart parsing (včetně detekce přeposlaných emailů) ────
+  const parsed = parseEmailFull(fromName, fromEmail, emailBody, subject);
   const companyName =
     explicitCompany ||
     parsed.signature.company_name ||
@@ -109,13 +109,21 @@ export async function POST(req: NextRequest) {
   }
 
   // ──── 3. Create Deal ────
-  const dealName = buildDealName(companyName, subject);
-  const inquiryType = detectInquiryType(subject + ' ' + emailBody);
+  // Pro přeposlaný email použijeme skutečný předmět (bez "Fwd:")
+  const effectiveSubject = parsed.isForwarded
+    ? subject.replace(/^(fwd?|přep|fw):\s*/i, '').trim()
+    : subject;
+
+  const dealName = buildDealName(companyName, effectiveSubject);
+  const inquiryType = detectInquiryType(effectiveSubject + ' ' + emailBody);
 
   const noteLines = [
     `📧 Vytvořeno z emailu`,
-    `Od: ${fromName || parsed.firstName} <${fromEmail}>`,
-    `Předmět: ${subject}`,
+    parsed.isForwarded
+      ? `Přeposláno přes: ${fromName || fromEmail} <${fromEmail}>`
+      : '',
+    `Od: ${parsed.firstName} ${parsed.lastName} <${parsed.email}>`,
+    `Předmět: ${effectiveSubject}`,
     parsed.signature.position ? `Pozice: ${parsed.signature.position}` : '',
     parsed.signature.phone ? `Telefon: ${parsed.signature.phone}` : '',
     parsed.signature.linkedin_url ? `LinkedIn: ${parsed.signature.linkedin_url}` : '',
