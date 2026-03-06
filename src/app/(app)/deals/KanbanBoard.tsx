@@ -36,6 +36,12 @@ const columnColors: Record<string, string> = {
   'Jiné': 'border-t-gray-300',
 };
 
+function formatEventDate(dateStr: string | null): string | null {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('cs-CZ', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
 function DealCard({
   deal,
   onDragStart,
@@ -47,6 +53,13 @@ function DealCard({
   onClick: () => void;
   isDragging: boolean;
 }) {
+  const eventDateStr = formatEventDate(deal.event_date ?? null);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const eventDate = deal.event_date ? new Date(deal.event_date) : null;
+  const isPast = eventDate && eventDate < today;
+  const isSoon = eventDate && !isPast && (eventDate.getTime() - today.getTime()) < 7 * 24 * 60 * 60 * 1000;
+
   return (
     <div
       draggable
@@ -80,11 +93,26 @@ function DealCard({
           </span>
         ))}
       </div>
-      {deal.value && (
-        <p className="mt-2 text-xs font-semibold text-green-600">
-          {deal.value.toLocaleString('cs-CZ')} Kč
-        </p>
-      )}
+      <div className="mt-2 flex items-center justify-between gap-2">
+        {deal.value ? (
+          <p className="text-xs font-semibold text-green-600">
+            {deal.value.toLocaleString('cs-CZ')} Kč
+          </p>
+        ) : <span />}
+        {eventDateStr && (
+          <span
+            className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+              isPast
+                ? 'bg-red-100 text-red-600'
+                : isSoon
+                ? 'bg-amber-100 text-amber-700'
+                : 'bg-slate-100 text-slate-600'
+            }`}
+          >
+            📅 {eventDateStr}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -133,6 +161,14 @@ function Column({
             {column.deals.length}
           </span>
         </div>
+        {column.deals.some((d) => d.value) && (
+          <span className="text-xs font-semibold text-green-600">
+            {column.deals
+              .reduce((sum, d) => sum + (d.value ?? 0), 0)
+              .toLocaleString('cs-CZ')}{' '}
+            Kč
+          </span>
+        )}
       </div>
 
       {/* Cards - scrollable */}

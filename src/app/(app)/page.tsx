@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
-import { Users, Building2, Handshake, TrendingUp } from 'lucide-react';
+import { Users, Building2, Handshake, TrendingUp, Bell } from 'lucide-react';
 import Link from 'next/link';
 import { DEAL_PIPELINE_STATUSES } from '@/lib/types';
 
@@ -8,6 +8,14 @@ const ACTIVE_STATUSES = DEAL_PIPELINE_STATUSES.filter((s) => s !== 'Deal');
 export default async function DashboardPage() {
   const supabase = await createClient();
 
+  // Compute "today" and "+14 days" date strings for follow-up query
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = today.toISOString().slice(0, 10);
+  const in14Days = new Date(today);
+  in14Days.setDate(in14Days.getDate() + 14);
+  const in14DaysStr = in14Days.toISOString().slice(0, 10);
+
   const [
     { count: contactCount },
     { count: clientCount },
@@ -15,6 +23,7 @@ export default async function DashboardPage() {
     { count: activeDealCount },
     { data: recentDeals },
     { data: recentContacts },
+    followupResult,
   ] = await Promise.all([
     supabase.from('contacts').select('*', { count: 'exact', head: true }),
     supabase.from('clients').select('*', { count: 'exact', head: true }),
@@ -33,7 +42,27 @@ export default async function DashboardPage() {
       .select('*')
       .order('created_at', { ascending: false })
       .limit(5),
+    // Follow-up: contacts with next_followup_at today or within 14 days
+    supabase
+      .from('contacts_with_client')
+      .select('id, first_name, last_name, full_name, company_name, client_name, position, next_followup_at')
+      .lte('next_followup_at', in14DaysStr)
+      .gte('next_followup_at', todayStr)
+      .order('next_followup_at', { ascending: true })
+      .limit(10),
   ]);
+
+  // followup contacts — gracefully handle missing column (null data)
+  const followupContacts = (followupResult.data ?? []) as Array<{
+    id: string;
+    first_name: string;
+    last_name: string;
+    full_name: string;
+    company_name: string | null;
+    client_name: string | null;
+    position: string | null;
+    next_followup_at: string;
+  }>;
 
   const stats = [
     {
@@ -91,6 +120,66 @@ export default async function DashboardPage() {
           </Link>
         ))}
       </div>
+
+      {/* Follow-up widget */}
+      {followupContacts.length > 0 && (
+        <div className="mt-8 rounded-xl border border-amber-200 bg-amber-50">
+          <div className="flex items-center justify-between border-b border-amber-200 px-5 py-4">
+            <div className="flex items-center gap-2">
+              <Bell className="h-5 w-5 text-amber-600" />
+              <h2 className="font-semibold text-amber-900">
+                Follow-up – dalších 14 dní
+              </h2>
+              <span className="rounded-full bg-amber-200 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                {followupContacts.length}
+              </span>
+            </div>
+            <Link href="/contacts" className="text-sm text-amber-700 hover:underline">
+              Zobrazit vše →
+            </Link>
+          </div>
+          <div className="divide-y divide-amber-100">
+            {followupContacts.map((contact) => {
+              const followupDate = new Date(contact.next_followup_at);
+              const isToday =
+                followupDate.toISOString().slice(0, 10) === todayStr;
+              const diffDays = Math.ceil(
+                (followupDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+              );
+              return (
+                <Link
+                  key={contact.id}
+                  href={`/contacts/${contact.id}`}
+                  className="flex items-center justify-between px-5 py-3 transition-colors hover:bg-amber-100/50"
+                >
+                  <div>
+                    <p className="text-sm font-medium text-amber-900">
+                      {contact.full_name || `${contact.first_name} ${contact.last_name}`}
+                    </p>
+                    <p className="text-xs text-amber-700">
+                      {contact.client_name ?? contact.company_name ?? '—'}
+                      {contact.position ? ` · ${contact.position}` : ''}
+                    </p>
+                  </div>
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                      isToday
+                        ? 'bg-red-100 text-red-700'
+                        : diffDays <= 3
+                        ? 'bg-orange-100 text-orange-700'
+                        : 'bg-amber-100 text-amber-700'
+                    }`}
+                  >
+                    {isToday
+                      ? 'Dnes!'
+                      : `za ${diffDays} ${diffDays === 1 ? 'den' : diffDays < 5 ? 'dny' : 'dní'}`}
+                  </span>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Recent Activity */}
       <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">

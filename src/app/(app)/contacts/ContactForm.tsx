@@ -34,6 +34,7 @@ export default function ContactForm({ contact, onSuccess }: ContactFormProps) {
     email_status: contact?.email_status ?? 'Aktivní',
     programs: contact?.programs ?? [],
     note: contact?.note ?? '',
+    next_followup_at: contact?.next_followup_at ?? '',
   });
 
   useEffect(() => {
@@ -58,6 +59,7 @@ export default function ContactForm({ contact, onSuccess }: ContactFormProps) {
     const payload = {
       ...formData,
       client_id: formData.client_id || null,
+      next_followup_at: formData.next_followup_at || null,
     };
 
     let result;
@@ -293,6 +295,18 @@ export default function ContactForm({ contact, onSuccess }: ContactFormProps) {
             </button>
           ))}
         </div>
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-sm font-medium">📅 Follow-up datum</label>
+        <input
+          type="date"
+          value={formData.next_followup_at}
+          onChange={(e) =>
+            setFormData({ ...formData, next_followup_at: e.target.value })
+          }
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent"
+        />
       </div>
 
       <div>

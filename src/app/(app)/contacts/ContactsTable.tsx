@@ -12,11 +12,16 @@ import {
   Mail,
   Filter,
   X,
+  Download,
+  CheckSquare,
+  Tag,
 } from 'lucide-react';
 import Badge from '@/components/ui/Badge';
 import Modal from '@/components/ui/Modal';
 import ContactForm from './ContactForm';
 import type { ContactWithClient } from '@/lib/types';
+import { PROGRAMS, DEPARTMENTS } from '@/lib/types';
+import { createClient } from '@/lib/supabase/client';
 
 interface ContactsTableProps {
   contacts: ContactWithClient[];
@@ -44,6 +49,14 @@ export default function ContactsTable({
   const [showFilters, setShowFilters] = useState(
     !!(filters.department || filters.program || filters.email_status)
   );
+
+  // Bulk select state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [showBulkProgram, setShowBulkProgram] = useState(false);
+  const [bulkProgram, setBulkProgram] = useState('');
+  const [showBulkDept, setShowBulkDept] = useState(false);
+  const [bulkDept, setBulkDept] = useState('');
 
   const totalPages = Math.ceil(totalCount / pageSize);
 
@@ -81,6 +94,138 @@ export default function ContactsTable({
     filters.email_status
   );
 
+  // ── Bulk select logic ──
+  const allVisibleSelected =
+    contacts.length > 0 && contacts.every((c) => selectedIds.has(c.id));
+
+  const toggleSelectAll = () => {
+    if (allVisibleSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(contacts.map((c) => c.id)));
+    }
+  };
+
+  const toggleSelectOne = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // ── Bulk add program ──
+  const handleBulkAddProgram = async () => {
+    if (!bulkProgram || selectedIds.size === 0) return;
+    setBulkLoading(true);
+    const supabase = createClient();
+    const selectedContacts = contacts.filter((c) => selectedIds.has(c.id));
+    const updates = selectedContacts.map((c) => {
+      const programs = c.programs ?? [];
+      if (programs.includes(bulkProgram)) return null;
+      return supabase
+        .from('contacts')
+        .update({ programs: [...programs, bulkProgram] })
+        .eq('id', c.id);
+    });
+    await Promise.all(updates.filter(Boolean));
+    setBulkLoading(false);
+    setShowBulkProgram(false);
+    setBulkProgram('');
+    setSelectedIds(new Set());
+    router.refresh();
+  };
+
+  // ── Bulk add department ──
+  const handleBulkAddDept = async () => {
+    if (!bulkDept || selectedIds.size === 0) return;
+    setBulkLoading(true);
+    const supabase = createClient();
+    const selectedContacts = contacts.filter((c) => selectedIds.has(c.id));
+    const updates = selectedContacts.map((c) => {
+      const departments = c.departments ?? [];
+      if (departments.includes(bulkDept)) return null;
+      return supabase
+        .from('contacts')
+        .update({ departments: [...departments, bulkDept] })
+        .eq('id', c.id);
+    });
+    await Promise.all(updates.filter(Boolean));
+    setBulkLoading(false);
+    setShowBulkDept(false);
+    setBulkDept('');
+    setSelectedIds(new Set());
+    router.refresh();
+  };
+
+  // ── Export CSV ──
+  const handleExportCSV = async () => {
+    const supabase = createClient();
+
+    let query = supabase
+      .from('contacts_with_client')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(5000);
+
+    if (filters.search) {
+      query = query.or(
+        `first_name.ilike.%${filters.search}%,last_name.ilike.%${filters.search}%,primary_email.ilike.%${filters.search}%,company_name.ilike.%${filters.search}%,position.ilike.%${filters.search}%`
+      );
+    }
+    if (filters.department) {
+      query = query.contains('departments', [filters.department]);
+    }
+    if (filters.program) {
+      query = query.contains('programs', [filters.program]);
+    }
+    if (filters.email_status) {
+      query = query.eq('email_status', filters.email_status);
+    }
+
+    const { data } = await query;
+    if (!data || data.length === 0) return;
+
+    const headers = [
+      'Jméno', 'Příjmení', 'Email', 'Telefon', 'Firma', 'Pozice',
+      'Oddělení', 'Programy', 'Stav emailu', 'LinkedIn', 'Poznámka',
+      'Follow-up datum', 'Vytvořen',
+    ];
+
+    const rows = data.map((c) => [
+      c.first_name ?? '',
+      c.last_name ?? '',
+      c.primary_email ?? '',
+      c.phone ?? '',
+      c.client_name ?? c.company_name ?? '',
+      c.position ?? '',
+      (c.departments ?? []).join('; '),
+      (c.programs ?? []).join('; '),
+      c.email_status ?? '',
+      c.linkedin_url ?? '',
+      (c.note ?? '').replace(/\n/g, ' '),
+      c.next_followup_at ?? '',
+      c.created_at ? new Date(c.created_at).toLocaleDateString('cs-CZ') : '',
+    ]);
+
+    const csv = [headers, ...rows]
+      .map((row) =>
+        row
+          .map((cell) => `"${String(cell).replace(/"/g, '""')}"`)
+          .join(',')
+      )
+      .join('\n');
+
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `kontakty-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div>
       {/* Header */}
@@ -91,13 +236,23 @@ export default function ContactsTable({
             {totalCount} kontaktů celkem
           </p>
         </div>
-        <button
-          onClick={() => setShowForm(true)}
-          className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-        >
-          <Plus className="h-4 w-4" />
-          Nový kontakt
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleExportCSV}
+            title="Exportovat do CSV"
+            className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-sm text-muted transition-colors hover:text-foreground"
+          >
+            <Download className="h-4 w-4" />
+            Export CSV
+          </button>
+          <button
+            onClick={() => setShowForm(true)}
+            className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+          >
+            <Plus className="h-4 w-4" />
+            Nový kontakt
+          </button>
+        </div>
       </div>
 
       {/* Search + Filters */}
@@ -182,11 +337,111 @@ export default function ContactsTable({
         )}
       </div>
 
+      {/* Bulk action toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="mt-3 flex items-center gap-3 rounded-lg border border-accent/30 bg-accent/5 px-4 py-2.5">
+          <CheckSquare className="h-4 w-4 text-accent" />
+          <span className="text-sm font-medium text-accent">
+            Vybráno {selectedIds.size} kontaktů
+          </span>
+          <div className="ml-2 flex items-center gap-2">
+            {/* Add program */}
+            {showBulkProgram ? (
+              <div className="flex items-center gap-2">
+                <select
+                  value={bulkProgram}
+                  onChange={(e) => setBulkProgram(e.target.value)}
+                  className="rounded border border-border bg-background px-2 py-1 text-xs outline-none"
+                >
+                  <option value="">— vyberte program —</option>
+                  {PROGRAMS.map((p) => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleBulkAddProgram}
+                  disabled={!bulkProgram || bulkLoading}
+                  className="rounded bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
+                >
+                  {bulkLoading ? 'Ukládám...' : 'Přidat'}
+                </button>
+                <button
+                  onClick={() => { setShowBulkProgram(false); setBulkProgram(''); }}
+                  className="rounded px-2 py-1 text-xs text-muted hover:text-foreground"
+                >
+                  Zrušit
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => { setShowBulkProgram(true); setShowBulkDept(false); }}
+                className="flex items-center gap-1.5 rounded border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-background"
+              >
+                <Tag className="h-3.5 w-3.5" />
+                Přidat program
+              </button>
+            )}
+
+            {/* Add department */}
+            {showBulkDept ? (
+              <div className="flex items-center gap-2">
+                <select
+                  value={bulkDept}
+                  onChange={(e) => setBulkDept(e.target.value)}
+                  className="rounded border border-border bg-background px-2 py-1 text-xs outline-none"
+                >
+                  <option value="">— vyberte oddělení —</option>
+                  {DEPARTMENTS.map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleBulkAddDept}
+                  disabled={!bulkDept || bulkLoading}
+                  className="rounded bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
+                >
+                  {bulkLoading ? 'Ukládám...' : 'Přidat'}
+                </button>
+                <button
+                  onClick={() => { setShowBulkDept(false); setBulkDept(''); }}
+                  className="rounded px-2 py-1 text-xs text-muted hover:text-foreground"
+                >
+                  Zrušit
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => { setShowBulkDept(true); setShowBulkProgram(false); }}
+                className="flex items-center gap-1.5 rounded border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-background"
+              >
+                <Tag className="h-3.5 w-3.5" />
+                Přidat oddělení
+              </button>
+            )}
+          </div>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="ml-auto text-xs text-muted hover:text-foreground"
+          >
+            Zrušit výběr
+          </button>
+        </div>
+      )}
+
       {/* Table */}
       <div className="mt-4 overflow-x-auto rounded-xl border border-border bg-card">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-background/50">
+              <th className="px-4 py-3 text-left">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAll}
+                  className="h-4 w-4 cursor-pointer rounded border-border accent-accent"
+                  title="Vybrat vše"
+                />
+              </th>
               <th className="px-4 py-3 text-left font-medium text-muted">Jméno</th>
               <th className="px-4 py-3 text-left font-medium text-muted">Firma</th>
               <th className="px-4 py-3 text-left font-medium text-muted">Pozice</th>
@@ -200,9 +455,22 @@ export default function ContactsTable({
             {contacts.map((contact) => (
               <tr
                 key={contact.id}
-                className="transition-colors hover:bg-background/50 cursor-pointer"
+                className={`transition-colors hover:bg-background/50 cursor-pointer ${
+                  selectedIds.has(contact.id) ? 'bg-accent/5' : ''
+                }`}
                 onClick={() => router.push(`/contacts/${contact.id}`)}
               >
+                <td
+                  className="px-4 py-3"
+                  onClick={(e) => { e.stopPropagation(); toggleSelectOne(contact.id); }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(contact.id)}
+                    onChange={() => toggleSelectOne(contact.id)}
+                    className="h-4 w-4 cursor-pointer rounded border-border accent-accent"
+                  />
+                </td>
                 <td className="px-4 py-3">
                   <div>
                     <span className="font-medium">
@@ -288,7 +556,7 @@ export default function ContactsTable({
             ))}
             {contacts.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-12 text-center text-muted">
+                <td colSpan={8} className="px-4 py-12 text-center text-muted">
                   {hasActiveFilters
                     ? 'Žádné kontakty neodpovídají filtrům'
                     : 'Zatím žádné kontakty. Přidejte první!'}

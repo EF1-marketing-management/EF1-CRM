@@ -35,6 +35,7 @@ export default function DealForm({
     note: deal?.note ?? '',
     end_client_id: deal?.end_client_id ?? '',
     value: deal?.value?.toString() ?? '',
+    event_date: deal?.event_date ?? '',
   });
 
   // Filter contacts by selected client
@@ -61,6 +62,7 @@ export default function DealForm({
       note: formData.note || null,
       end_client_id: formData.end_client_id || null,
       value: formData.value ? parseFloat(formData.value) : null,
+      event_date: formData.event_date || null,
     };
 
     let result;
@@ -245,6 +247,20 @@ export default function DealForm({
             className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent"
           />
         </div>
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-sm font-medium">
+          📅 Datum akce / realizace
+        </label>
+        <input
+          type="date"
+          value={formData.event_date}
+          onChange={(e) =>
+            setFormData({ ...formData, event_date: e.target.value })
+          }
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent"
+        />
       </div>
 
       <div>

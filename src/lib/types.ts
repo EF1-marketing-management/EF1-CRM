@@ -37,6 +37,7 @@ export interface Contact {
   cannot_verify_work_email: boolean;
   cannot_verify_personal_email: boolean;
   note: string | null;
+  next_followup_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -59,6 +60,7 @@ export interface Deal {
   end_client_id: string | null;
   is_updated: boolean;
   value: number | null;
+  event_date: string | null;
   created_at: string;
   updated_at: string;
 }
